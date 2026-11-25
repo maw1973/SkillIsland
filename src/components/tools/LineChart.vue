@@ -1,0 +1,42 @@
+<script setup>
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick, shallowRef } from 'vue'
+import Chart from 'chart.js/auto'
+import ExcelJS from 'exceljs'
+const title=ref('歷年平均成績趨勢'), xTitle=ref('年度'), yTitle=ref('分數'), color=ref('#ea8c28'), smooth=ref(true), fill=ref(false), points=ref(true), gaps=ref(false), legend=ref(true), zero=ref(true)
+const input=ref('年度,期中,期末\n2022,78,86\n2023,85,91\n2024,82,94\n2025,90,96')
+const canvas=ref(null), error=ref(''), book=shallowRef(null), sheets=ref([]), selected=ref(''), busy=ref(false), status=ref('')
+let chart=null
+function parse(text){
+ const rows=[];let row=[],field='',quoted=false
+ text=text.replace(/^\uFEFF/,'')
+ for(let i=0;i<text.length;i++){const c=text[i];if(quoted){if(c==='"'&&text[i+1]==='"'){field+='"';i++}else if(c==='"')quoted=false;else field+=c}else if(c==='"'&&!field)quoted=true;else if(c===','){row.push(field);field=''}else if(c==='\n'||c==='\r'){if(c==='\r'&&text[i+1]==='\n')i++;row.push(field);rows.push(row);row=[];field=''}else field+=c}
+ if(quoted)throw Error('CSV 引號尚未關閉');row.push(field);rows.push(row);return rows.filter(r=>r.some(v=>v.trim()!==''))
+}
+const parsed=computed(()=>{try{const rows=parse(input.value);if(rows.length<2||rows[0].length<2)throw Error('請提供標題列、分類欄及至少一組數值資料。');const header=rows[0];if(header.length>13||rows.length>501)throw Error('最多 12 組數值、500 筆分類。');const labels=[],series=header.slice(1).map((s,i)=>({label:s.trim()||`數列 ${i+1}`,data:[]}));for(const [i,r] of rows.slice(1).entries()){if(r.length!==header.length)throw Error(`第 ${i+2} 列欄位數不一致`);labels.push(r[0]);r.slice(1).forEach((v,j)=>{const n=v.trim()===''?null:Number(v);if(n!==null&&!Number.isFinite(n))throw Error(`第 ${i+2} 列「${series[j].label}」不是數值`);series[j].data.push(n)})}return {labels,series,error:''}}catch(e){return {labels:[],series:[],error:e.message}}})
+const palette=['#2499c2','#8b5cf6','#10b981','#e85d75','#64748b','#eab308']
+function render(){
+ if(chart){chart.destroy();chart=null}
+ if(!canvas.value||parsed.value.error)return
+ chart=new Chart(canvas.value,{type:'line',data:{labels:parsed.value.labels,datasets:parsed.value.series.map((s,i)=>{const c=i===0?color.value:palette[(i-1)%palette.length];return {...s,borderColor:c,backgroundColor:c+'30',pointBackgroundColor:c,borderWidth:3,tension:smooth.value?0.35:0,fill:fill.value,pointRadius:points.value?4:0,pointHoverRadius:6,spanGaps:gaps.value}})},options:{responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},plugins:{title:{display:!!title.value,text:title.value,font:{size:18}},legend:{display:legend.value}},scales:{x:{title:{display:true,text:xTitle.value}},y:{title:{display:true,text:yTitle.value},beginAtZero:zero.value}}}})
+}
+watch([parsed,title,xTitle,yTitle,color,smooth,fill,points,gaps,legend,zero],()=>nextTick(render),{flush:'post'})
+onMounted(render);onBeforeUnmount(()=>chart?.destroy())
+function csvCell(v){return '"'+String(v??'').replace(/"/g,'""')+'"'}
+function cellValue(cell){const v=cell.value;if(v==null)return '';if(typeof v==='object'&&'formula' in v||typeof v==='object'&&'sharedFormula' in v)return v.result??'';if(v instanceof Date)return cell.text;return typeof v==='number'?v:cell.text}
+function importSheet(){try{error.value='';const ws=book.value?.getWorksheet(Number(selected.value));if(!ws)return;if(ws.rowCount>501||ws.columnCount>13)throw Error('工作表最多 501 列、13 欄，請先裁減資料。');const rows=[];for(let i=1;i<=ws.rowCount;i++){const r=[];for(let j=1;j<=ws.columnCount;j++)r.push(csvCell(cellValue(ws.getRow(i).getCell(j))));rows.push(r.join(','))}input.value=rows.join('\n');status.value='已匯入 '+ws.name}catch(e){error.value=e.message}}
+async function upload(e){const f=e.target.files?.[0];if(!f)return;busy.value=true;error.value='';status.value='';try{if(f.size>10*1024*1024)throw Error('檔案上限 10 MB');if(/\.xlsx$/i.test(f.name)){const wb=new ExcelJS.Workbook();await wb.xlsx.load(await f.arrayBuffer());book.value=wb;sheets.value=wb.worksheets.map(w=>({id:w.id,name:w.name}));selected.value=sheets.value[0]?.id??'';importSheet()}else if(/\.(csv|txt)$/i.test(f.name)){book.value=null;sheets.value=[];input.value=await f.text();status.value='已匯入 '+f.name}else throw Error('請選擇 XLSX、CSV 或 TXT')}catch(e){error.value=e.message+(/sheets/.test(e.message)?'；請以 Excel 另存標準 XLSX，或改用 UTF-8 CSV。':'')}finally{busy.value=false;e.target.value=''}}
+function download(){if(!chart)return;const c=document.createElement('canvas');c.width=chart.canvas.width;c.height=chart.canvas.height;const ctx=c.getContext('2d');ctx.fillStyle='#ffffff';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(chart.canvas,0,0);const a=document.createElement('a');a.href=c.toDataURL('image/png');a.download='SkillIsland-line.png';a.click()}
+function sample(){input.value='年度,期中,期末\n2022,78,86\n2023,85,91\n2024,82,94\n2025,90,96';error.value='';status.value=''}
+</script>
+<template>
+<section class="line-lab">
+ <header><small>DATA LAB / V6.1</small><h3>📈 折線圖工作室</h3><p>匯入資料、自訂圖表、立即預覽與下載。</p></header>
+ <div class="lab-grid"><article><h4>① 資料來源</h4><div class="actions"><button @click="sample">載入範例</button><label class="upload">上傳 Excel / CSV<input type="file" accept=".xlsx,.csv,.txt" @change="upload" :disabled="busy"></label></div><label v-if="sheets.length">工作表<select v-model="selected" @change="importSheet"><option v-for="s in sheets" :key="s.id" :value="s.id">{{s.name}}</option></select></label><p v-if="status">{{status}}</p><label>CSV 資料（首列為欄名、首欄為分類）<textarea v-model="input" rows="10" spellcheck="false"/></label><p v-if="busy">讀取中…</p><p v-if="error || parsed.error" class="err" role="alert">{{error || parsed.error}}</p></article>
+ <article><h4>② 圖表設定</h4><label>圖表標題<input v-model="title"></label><label>時間／分類軸標題<input v-model="xTitle"></label><label>數值軸標題<input v-model="yTitle"></label><label>第一組數列顏色<input type="color" v-model="color"></label><div class="checks"><label><input type="checkbox" v-model="smooth"> 平滑曲線</label><label><input type="checkbox" v-model="fill"> 面積填色</label><label><input type="checkbox" v-model="points"> 顯示節點</label><label><input type="checkbox" v-model="gaps"> 連接缺漏值</label><label><input type="checkbox" v-model="legend"> 顯示圖例</label><label><input type="checkbox" v-model="zero"> 數值軸從零開始</label></div></article></div>
+ <article><div class="actions between"><h4>③ 即時圖表預覽</h4><button @click="download" :disabled="!!parsed.error">下載 PNG</button></div><p>{{parsed.labels.length}} 個分類 · {{parsed.series.length}} 組數列</p><div class="chart-area"><canvas ref="canvas" aria-label="折線圖"></canvas></div></article>
+ <article v-if="!parsed.error"><h4>資料預覽（前 20 筆）</h4><div class="table-wrap"><table><thead><tr><th>分類</th><th v-for="(s,i) in parsed.series" :key="i">{{s.label}}</th></tr></thead><tbody><tr v-for="(l,i) in parsed.labels.slice(0,20)" :key="i"><td>{{l}}</td><td v-for="(s,j) in parsed.series" :key="j">{{s.data[i] ?? '—'}}</td></tr></tbody></table></div></article>
+</section>
+</template>
+<style scoped>
+.line-lab{display:grid;gap:16px;color:#28364a}.line-lab header{background:linear-gradient(115deg,#ffedd5,#fef3c7);padding:24px;border-radius:22px;color:#92400e}.line-lab header small{letter-spacing:2px;font-weight:800}.line-lab h3{font-size:28px;margin:8px 0}.line-lab p{margin:8px 0}.lab-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:16px}.line-lab article{background:white;border:1px solid #e2e8f0;border-radius:20px;padding:18px;min-width:0}.line-lab h4{font-weight:800;color:#9a3412;margin:0 0 12px}.line-lab label{display:grid;gap:6px;margin:9px 0;font-weight:600}.line-lab input:not([type=checkbox]),.line-lab select,.line-lab textarea{width:100%;border:1px solid #cbd5e1;border-radius:9px;padding:9px;background:white;color:#243447}.line-lab textarea{font-family:monospace;resize:vertical}.line-lab input[type=color]{height:42px}.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.actions.between{justify-content:space-between}.line-lab .upload{display:inline-block;padding:10px 14px;background:#ffedd5;border-radius:12px;cursor:pointer}.upload input{display:none}.checks{display:grid;grid-template-columns:1fr 1fr}.checks label{display:flex;align-items:center}.chart-area{height:390px;position:relative}.err{color:#b91c1c}.table-wrap{overflow:auto}.line-lab table{width:100%;border-collapse:collapse}.line-lab td,.line-lab th{padding:9px;text-align:left;border-bottom:1px solid #e2e8f0}.line-lab th{background:#fff7ed}.line-lab button:disabled{opacity:.5}@media(max-width:800px){.lab-grid{grid-template-columns:1fr}.chart-area{height:300px}}
+</style>
